@@ -1,53 +1,56 @@
  /* vi: set sw = 4 ts = 4: */
-/*Small bzip2 deflate implementation, by Rob Landley (rob@landley.net).
+/*	Small bzip2 deflate implementation, by Rob Landley (rob@landley.net).
 
-Based on bzip2 decompression code by Julian R Seward (jseward@acm.org),
-which also acknowledges contributions by Mike Burrows, David Wheeler,
-Peter Fenwick, Alistair Moffat, Radford Neal, Ian H. Witten,
-Robert Sedgewick, and Jon L. Bentley.
+	Based on bzip2 decompression code by Julian R Seward (jseward@acm.org),
+	which also acknowledges contributions by Mike Burrows, David Wheeler,
+	Peter Fenwick, Alistair Moffat, Radford Neal, Ian H. Witten,
+	Robert Sedgewick, and Jon L. Bentley.
 
-This code is licensed under the LGPLv2:
-LGPL (http://www.gnu.org/copyleft/lgpl.html
+	This code is licensed under the LGPLv2:
+		LGPL (http://www.gnu.org/copyleft/lgpl.html
 */
 
 /*
-Size and speed optimizations by Manuel Novoa III  (mjn3@codepoet.org).
+	Size and speed optimizations by Manuel Novoa III  (mjn3@codepoet.org).
 
-More efficient reading of Huffman codes, a streamlined read_bunzip()
-function, and various other tweaks.  In (limited) tests, approximately
-20% faster than bzcat on x86 and about 10% faster on arm.
+	More efficient reading of Huffman codes, a streamlined read_bunzip()
+	function, and various other tweaks.  In (limited) tests, approximately
+	20% faster than bzcat on x86 and about 10% faster on arm.
 
-Note that about 2/3 of the time is spent in read_unzip() reversing
-the Burrows-Wheeler transformation.  Much of that time is delay
-resulting from cache misses.
+	Note that about 2/3 of the time is spent in read_unzip() reversing
+	the Burrows-Wheeler transformation.  Much of that time is delay
+	resulting from cache misses.
 
-I would ask that anyone benefiting from this work, especially those
-using it in commercial products, consider making a donation to my local
-non-profit hospice organization in the name of the woman I loved, who
-passed away Feb. 12, 2003.
+	I would ask that anyone benefiting from this work, especially those
+	using it in commercial products, consider making a donation to my local
+	non-profit hospice organization in the name of the woman I loved, who
+	passed away Feb. 12, 2003.
 
-In memory of Toni W. Hagan
+		In memory of Toni W. Hagan
 
-Hospice of Acadiana, Inc.
-2600 Johnston St., Suite 200
-Lafayette, LA 70503-3240
+		Hospice of Acadiana, Inc.
+		2600 Johnston St., Suite 200
+		Lafayette, LA 70503-3240
 
-Phone (337) 232-1234 or 1-800-738-2226
-Fax   (337) 232-1297
+		Phone (337) 232-1234 or 1-800-738-2226
+		Fax   (337) 232-1297
 
-http://www.hospiceacadiana.com/
+		http://www.hospiceacadiana.com/
 
-Manuel
+	Manuel
  */
 
 /*
-Made it fit for running in Linux Kernel by Alain Knaff (alain@knaff.lu)
+	Made it fit for running in Linux Kernel by Alain Knaff (alain@knaff.lu)
 */
 
 
-#ifndef STATIC
+#ifdef STATIC
+#define PREBOOT
+#else
 #include <linux/decompress/bunzip2.h>
-#endif /* !STATIC */
+#include <linux/slab.h>
+#endif /* STATIC */
 
 #include <linux/decompress/mm.h>
 
@@ -57,9 +60,9 @@ Made it fit for running in Linux Kernel by Alain Knaff (alain@knaff.lu)
 
 /* Constants for Huffman coding */
 #define MAX_GROUPS		6
-#define GROUP_SIZE		50/* 64 would have been more efficient */
-#define MAX_HUFCODE_BITS	20/* Longest Huffman code allowed */
-#define MAX_SYMBOLS		258/* 256 literals + RUNA + RUNB */
+#define GROUP_SIZE   		50	/* 64 would have been more efficient */
+#define MAX_HUFCODE_BITS 	20	/* Longest Huffman code allowed */
+#define MAX_SYMBOLS 		258	/* 256 literals + RUNA + RUNB */
 #define SYMBOL_RUNA		0
 #define SYMBOL_RUNB		1
 
@@ -74,36 +77,36 @@ Made it fit for running in Linux Kernel by Alain Knaff (alain@knaff.lu)
 #define RETVAL_OBSOLETE_INPUT		(-7)
 
 /* Other housekeeping constants */
-#define BZIP2_IOBUF_SIZE	4096
+#define BZIP2_IOBUF_SIZE		4096
 
 /* This is what we know about each Huffman coding group */
 struct group_data {
-/* We have an extra slot at the end of limit[] for a sentinal value. */
-int limit[MAX_HUFCODE_BITS+1];
-int base[MAX_HUFCODE_BITS];
-int permute[MAX_SYMBOLS];
-int minLen, maxLen;
+	/* We have an extra slot at the end of limit[] for a sentinal value. */
+	int limit[MAX_HUFCODE_BITS+1];
+	int base[MAX_HUFCODE_BITS];
+	int permute[MAX_SYMBOLS];
+	int minLen, maxLen;
 };
 
 /* Structure holding all the housekeeping data, including IO buffers and
    memory that persists between calls to bunzip */
 struct bunzip_data {
-/* State for interrupting output loop */
-int writeCopies, writePos, writeRunCountdown, writeCount, writeCurrent;
-/* I/O tracking data (file handles, buffers, positions, etc.) */
-int (*fill)(void*, unsigned int);
-int inbufCount, inbufPos /*, outbufPos*/;
-unsigned char *inbuf /*,*outbuf*/;
-unsigned int inbufBitCount, inbufBits;
-/* The CRC values stored in the block header and calculated from the
-data */
-unsigned int crc32Table[256], headerCRC, totalCRC, writeCRC;
-/* Intermediate buffer and its size (in bytes) */
-unsigned int *dbuf, dbufSize;
-/* These things are a bit too big to go on the stack */
-unsigned char selectors[32768];/* nSelectors = 15 bits */
-struct group_data groups[MAX_GROUPS];/* Huffman coding tables */
-int io_error;/* non-zero if we have IO error */
+	/* State for interrupting output loop */
+	int writeCopies, writePos, writeRunCountdown, writeCount, writeCurrent;
+	/* I/O tracking data (file handles, buffers, positions, etc.) */
+	int (*fill)(void*, unsigned int);
+	int inbufCount, inbufPos /*, outbufPos*/;
+	unsigned char *inbuf /*,*outbuf*/;
+	unsigned int inbufBitCount, inbufBits;
+	/* The CRC values stored in the block header and calculated from the
+	data */
+	unsigned int crc32Table[256], headerCRC, totalCRC, writeCRC;
+	/* Intermediate buffer and its size (in bytes) */
+	unsigned int *dbuf, dbufSize;
+	/* These things are a bit too big to go on the stack */
+	unsigned char selectors[32768];		/* nSelectors = 15 bits */
+	struct group_data groups[MAX_GROUPS];	/* Huffman coding tables */
+	int io_error;			/* non-zero if we have IO error */
 };
 
 
@@ -111,74 +114,74 @@ int io_error;/* non-zero if we have IO error */
    are done through this function.  All reads are big endian */
 static unsigned int INIT get_bits(struct bunzip_data *bd, char bits_wanted)
 {
-unsigned int bits = 0;
+	unsigned int bits = 0;
 
-/* If we need to get more data from the byte buffer, do so.
-   (Loop getting one byte at a time to enforce endianness and avoid
-   unaligned access.) */
-while (bd->inbufBitCount < bits_wanted) {
-/* If we need to read more data from file into byte buffer, do
-   so */
-if (bd->inbufPos == bd->inbufCount) {
-if (bd->io_error)
-return 0;
-bd->inbufCount = bd->fill(bd->inbuf, BZIP2_IOBUF_SIZE);
-if (bd->inbufCount <= 0) {
-bd->io_error = RETVAL_UNEXPECTED_INPUT_EOF;
-return 0;
-}
-bd->inbufPos = 0;
-}
-/* Avoid 32-bit overflow (dump bit buffer to top of output) */
-if (bd->inbufBitCount >= 24) {
-bits = bd->inbufBits&((1 << bd->inbufBitCount)-1);
-bits_wanted -= bd->inbufBitCount;
-bits <<= bits_wanted;
-bd->inbufBitCount = 0;
-}
-/* Grab next 8 bits of input from buffer. */
-bd->inbufBits = (bd->inbufBits << 8)|bd->inbuf[bd->inbufPos++];
-bd->inbufBitCount += 8;
-}
-/* Calculate result */
-bd->inbufBitCount -= bits_wanted;
-bits |= (bd->inbufBits >> bd->inbufBitCount)&((1 << bits_wanted)-1);
+	/* If we need to get more data from the byte buffer, do so.
+	   (Loop getting one byte at a time to enforce endianness and avoid
+	   unaligned access.) */
+	while (bd->inbufBitCount < bits_wanted) {
+		/* If we need to read more data from file into byte buffer, do
+		   so */
+		if (bd->inbufPos == bd->inbufCount) {
+			if (bd->io_error)
+				return 0;
+			bd->inbufCount = bd->fill(bd->inbuf, BZIP2_IOBUF_SIZE);
+			if (bd->inbufCount <= 0) {
+				bd->io_error = RETVAL_UNEXPECTED_INPUT_EOF;
+				return 0;
+			}
+			bd->inbufPos = 0;
+		}
+		/* Avoid 32-bit overflow (dump bit buffer to top of output) */
+		if (bd->inbufBitCount >= 24) {
+			bits = bd->inbufBits&((1 << bd->inbufBitCount)-1);
+			bits_wanted -= bd->inbufBitCount;
+			bits <<= bits_wanted;
+			bd->inbufBitCount = 0;
+		}
+		/* Grab next 8 bits of input from buffer. */
+		bd->inbufBits = (bd->inbufBits << 8)|bd->inbuf[bd->inbufPos++];
+		bd->inbufBitCount += 8;
+	}
+	/* Calculate result */
+	bd->inbufBitCount -= bits_wanted;
+	bits |= (bd->inbufBits >> bd->inbufBitCount)&((1 << bits_wanted)-1);
 
-return bits;
+	return bits;
 }
 
 /* Unpacks the next block and sets up for the inverse burrows-wheeler step. */
 
 static int INIT get_next_block(struct bunzip_data *bd)
 {
-struct group_data *hufGroup = NULL;
-int *base = NULL;
-int *limit = NULL;
-int dbufCount, nextSym, dbufSize, groupCount, selector,
-i, j, k, t, runPos, symCount, symTotal, nSelectors,
-byteCount[256];
-unsigned char uc, symToByte[256], mtfSymbol[256], *selectors;
-unsigned int *dbuf, origPtr;
+	struct group_data *hufGroup = NULL;
+	int *base = NULL;
+	int *limit = NULL;
+	int dbufCount, nextSym, dbufSize, groupCount, selector,
+		i, j, k, t, runPos, symCount, symTotal, nSelectors,
+		byteCount[256];
+	unsigned char uc, symToByte[256], mtfSymbol[256], *selectors;
+	unsigned int *dbuf, origPtr;
 
-dbuf = bd->dbuf;
-dbufSize = bd->dbufSize;
-selectors = bd->selectors;
+	dbuf = bd->dbuf;
+	dbufSize = bd->dbufSize;
+	selectors = bd->selectors;
 
-/* Read in header signature and CRC, then validate signature.
-   (last block signature means CRC is for whole file, return now) */
-i = get_bits(bd, 24);
-j = get_bits(bd, 24);
-bd->headerCRC = get_bits(bd, 32);
-if ((i == 0x177245) && (j == 0x385090))
-return RETVAL_LAST_BLOCK;
-if ((i != 0x314159) || (j != 0x265359))
-return RETVAL_NOT_BZIP_DATA;
-/* We can add support for blockRandomised if anybody complains.
-   There was some code for this in busybox 1.0.0-pre3, but nobody ever
-   noticed that it didn't actually work. */
-if (get_bits(bd, 1))
-return RETVAL_OBSOLETE_INPUT;
-origPtr = get_bits(bd, 24);
+	/* Read in header signature and CRC, then validate signature.
+	   (last block signature means CRC is for whole file, return now) */
+	i = get_bits(bd, 24);
+	j = get_bits(bd, 24);
+	bd->headerCRC = get_bits(bd, 32);
+	if ((i == 0x177245) && (j == 0x385090))
+		return RETVAL_LAST_BLOCK;
+	if ((i != 0x314159) || (j != 0x265359))
+		return RETVAL_NOT_BZIP_DATA;
+	/* We can add support for blockRandomised if anybody complains.
+	   There was some code for this in busybox 1.0.0-pre3, but nobody ever
+	   noticed that it didn't actually work. */
+	if (get_bits(bd, 1))
+		return RETVAL_OBSOLETE_INPUT;
+	origPtr = get_bits(bd, 24);
 	if (origPtr > dbufSize)
 		return RETVAL_DATA_ERROR;
 	/* mapping table: if some byte values are never used (encoding things
@@ -680,9 +683,7 @@ STATIC int INIT bunzip2(unsigned char *buf, int len,
 	set_error_fn(error_fn);
 	if (flush)
 		outbuf = malloc(BZIP2_IOBUF_SIZE);
-	else
-		len -= 4; /* Uncompressed size hack active in pre-boot
-			     environment */
+
 	if (!outbuf) {
 		error("Could not allocate output bufer");
 		return -1;
@@ -732,5 +733,14 @@ exit_0:
 	return i;
 }
 
-#define decompress bunzip2
-
+#ifdef PREBOOT
+STATIC int INIT decompress(unsigned char *buf, int len,
+			int(*fill)(void*, unsigned int),
+			int(*flush)(void*, unsigned int),
+			unsigned char *outbuf,
+			int *pos,
+			void(*error_fn)(char *x))
+{
+	return bunzip2(buf, len - 4, fill, flush, outbuf, pos, error_fn);
+}
+#endif
