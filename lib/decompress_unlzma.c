@@ -1,4 +1,4 @@
-/* Lzma decompressor for Linux kernel. Shamelessly snarfed
+ /* Lzma decompressor for Linux kernel. Shamelessly snarfed
  *from busybox 1.1.1
  *
  *Linux kernel adaptation
@@ -29,8 +29,11 @@
  *Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#ifndef STATIC
+#ifdef STATIC
+#define PREBOOT
+#else
 #include <linux/decompress/unlzma.h>
+#include <linux/slab.h>
 #endif /* STATIC */
 
 #include <linux/decompress/mm.h>
@@ -79,6 +82,11 @@ struct rc {
 #define RC_MODEL_TOTAL_BITS 11
 
 
+static int nofill(void *buffer, unsigned int len)
+{
+	return -1;
+}
+
 /* Called twice: once at startup and once in rc_normalize() */
 static void INIT rc_read(struct rc *rc)
 {
@@ -94,7 +102,10 @@ static inline void INIT rc_init(struct rc *rc,
 				       int (*fill)(void*, unsigned int),
 				       char *buffer, int buffer_size)
 {
-	rc->fill = fill;
+	if (fill)
+		rc->fill = fill;
+	else
+		rc->fill = nofill;
 	rc->buffer = (uint8_t *)buffer;
 	rc->buffer_size = buffer_size;
 	rc->buffer_end = rc->buffer + rc->buffer_size;
@@ -542,9 +553,7 @@ STATIC inline int INIT unlzma(unsigned char *buf, int in_len,
 	int ret = -1;
 
 	set_error_fn(error_fn);
-	if (!flush)
-		in_len -= 4; /* Uncompressed size hack active in pre-boot
-				environment */
+
 	if (buf)
 		inbuf = buf;
 	else
@@ -644,5 +653,15 @@ exit_0:
 	return ret;
 }
 
-#define decompress unlzma
-
+#ifdef PREBOOT
+STATIC int INIT decompress(unsigned char *buf, int in_len,
+			      int(*fill)(void*, unsigned int),
+			      int(*flush)(void*, unsigned int),
+			      unsigned char *output,
+			      int *posp,
+			      void(*error_fn)(char *x)
+	)
+{
+	return unlzma(buf, in_len - 4, fill, flush, output, posp, error_fn);
+}
+#endif
